@@ -68,6 +68,8 @@ MaxLikelihoodFit::MaxLikelihoodFit() :
         ("customStartingPoint",  "Don't set the signal model parameters to zero before the fit")
    ;
 
+
+
     // setup a few defaults
     nToys=0; fitStatus_=0; mu_=0; muLoErr_=0; muHiErr_=0; numbadnll_=-1; nll_nll0_=-1; nll_bonly_=-1; nll_sb_=-1;
 }
@@ -77,6 +79,7 @@ MaxLikelihoodFit::~MaxLikelihoodFit(){
    delete globalObservables_;
    delete nuisanceParameters_;
    delete processNormalizations_;
+   delete parametersOfInterest_;
 }
 
 void MaxLikelihoodFit::setToyNumber(const int iToy){
@@ -106,6 +109,8 @@ void MaxLikelihoodFit::applyOptions(const boost::program_options::variables_map 
 }
 
 bool MaxLikelihoodFit::runSpecific(RooWorkspace *w, RooStats::ModelConfig *mc_s, RooStats::ModelConfig *mc_b, RooAbsData &data, double &limit, double &limitErr, const double *hint) {
+ 
+  TString out_string = TString(out_); 
 
   if (reuseParams_ && minos_!="none"){
 	std::cout << "Cannot reuse b-only fit params when running minos. Parameters will be reset when running S+B fit"<<std::endl;
@@ -122,10 +127,17 @@ bool MaxLikelihoodFit::runSpecific(RooWorkspace *w, RooStats::ModelConfig *mc_s,
 
   RooRealVar *r = dynamic_cast<RooRealVar *>(mc_s->GetParametersOfInterest()->first());
 
+  std::cout << "giulia debug : first parameter of interest " << std::endl;
+  r->Print();
+
   TCanvas *c1 = 0;
+  //giulia make plots
+  //TFile* file = new TFile(out_string.Append(TString::Format("/canvas_plots_toy%d.root",currentToy_+1)),"recreate");
+  
   if (makePlots_) {
       utils::tdrStyle();
       c1 = new TCanvas("c1","c1");
+      c1->SetLogy(1);
   }
 
   // Make pre-plots before the fit
@@ -136,18 +148,26 @@ bool MaxLikelihoodFit::runSpecific(RooWorkspace *w, RooStats::ModelConfig *mc_s,
           (*it)->Draw(); 
           c1->Print((out_+"/"+(*it)->GetName()+"_prefit.png").c_str());
           if (fitOut.get() && currentToy_< 1) fitOut->WriteTObject(*it, (std::string((*it)->GetName())+"_prefit").c_str());
+	  c1->SetName(TString::Format("prefit_toy%d",currentToy_+1));
+	  //giulia
+	  //file->cd();
+	  //c1->Write(); 
       }
   }
 
+  //std::cout << "giulia debug: did plots before fit" << std::endl;
 
   // Determine pre-fit values of nuisance parameters
   if (currentToy_ < 1){
     const RooArgSet *nuis      = mc_s->GetNuisanceParameters();
     const RooArgSet *globalObs = mc_s->GetGlobalObservables();
+    //const RooArgSet *params_    = mc_s->GetObservables();
     if (!justFit_ && nuis && globalObs ) {
       std::auto_ptr<RooAbsPdf> nuisancePdf(utils::makeNuisancePdf(*mc_s));
       std::auto_ptr<RooDataSet> globalData(new RooDataSet("globalData","globalData", *globalObs));
       globalData->add(*globalObs);
+      //globalData->add(*params_);
+      
       RooFitResult *res_prefit = 0;
       {     
             CloseCoutSentry sentry(verbose < 2);
@@ -176,7 +196,9 @@ bool MaxLikelihoodFit::runSpecific(RooWorkspace *w, RooStats::ModelConfig *mc_s,
       if (fitOut.get() ) fitOut->WriteTObject(nuis->snapshot(), "nuisances_prefit");
     }
   }
-  
+
+  //std::cout << "giulia debug: just before fit" << std::endl;
+
   RooFitResult *res_b = 0, *res_s = 0;
   const RooCmdArg &constCmdArg_s = withSystematics  ? RooFit::Constrain(*mc_s->GetNuisanceParameters()) : RooFit::NumCPU(1); // use something dummy 
   const RooCmdArg &minosCmdArg = minos_ == "poi" ?  RooFit::Minos(*mc_s->GetParametersOfInterest())   : RooFit::Minos(minos_ != "none"); 
@@ -197,6 +219,8 @@ bool MaxLikelihoodFit::runSpecific(RooWorkspace *w, RooStats::ModelConfig *mc_s,
     nll_bonly_=nll->getVal()-nll0;   
   } else {
     CloseCoutSentry sentry(verbose < 2);
+    
+    
     res_b = mc_s->GetPdf()->fitTo(data, 
             RooFit::Save(1), 
             RooFit::Minimizer(ROOT::Math::MinimizerOptions::DefaultMinimizerType().c_str(), ROOT::Math::MinimizerOptions::DefaultMinimizerAlgo().c_str()), 
@@ -209,9 +233,16 @@ bool MaxLikelihoodFit::runSpecific(RooWorkspace *w, RooStats::ModelConfig *mc_s,
   }
 
   if (res_b) { 
+      
       if (verbose > 1) res_b->Print("V");
       if (fitOut.get()) {
-	 if (currentToy_< 1)	fitOut->WriteTObject(res_b,"fit_b");
+
+	if (currentToy_< 1)	fitOut->WriteTObject(res_b,"fit_b");
+	RooAbsPdf* pdf_model = (RooAbsPdf*)mc_s->GetPdf();
+	const RooArgSet *params_ =  pdf_model->getParameters(*mc_s->GetObservables());
+	//params_->Print();
+
+	setFitResultTrees(params_,parametersOfInterest_);
 	 if (withSystematics)	{
 		setFitResultTrees(mc_s->GetNuisanceParameters(),nuisanceParameters_);
 		setFitResultTrees(mc_s->GetGlobalObservables(),globalObservables_);
@@ -220,16 +251,22 @@ bool MaxLikelihoodFit::runSpecific(RooWorkspace *w, RooStats::ModelConfig *mc_s,
       }
       numbadnll_=res_b->numInvalidNLL();
 
-      if (makePlots_) {
+      if (makePlots_) 
+	{
+
           std::vector<RooPlot *> plots = utils::makePlots(*mc_b->GetPdf(), data, signalPdfNames_.c_str(), backgroundPdfNames_.c_str(), rebinFactor_);
           for (std::vector<RooPlot *>::iterator it = plots.begin(), ed = plots.end(); it != ed; ++it) {
-              c1->cd(); (*it)->Draw(); 
+	      c1->cd(); (*it)->Draw(); 
               c1->Print((out_+"/"+(*it)->GetName()+"_fit_b.png").c_str());
               if (fitOut.get() && currentToy_< 1) fitOut->WriteTObject(*it, (std::string((*it)->GetName())+"_fit_b").c_str());
-          }
+      	      c1->SetName(TString::Format("fit_b_toy%d",currentToy_+1));
+      	      //file->cd();
+      	      //c1->Write();  
+	  }
       }
 
       if (saveNormalizations_) {
+
           RooArgSet *norms = new RooArgSet();
           norms->setName("norm_fit_b");
           CovarianceReSampler sampler(res_b);
@@ -239,6 +276,7 @@ bool MaxLikelihoodFit::runSpecific(RooWorkspace *w, RooStats::ModelConfig *mc_s,
       }
 
       if (makePlots_ && currentToy_<1)  {
+
 	  TH2 *corr = res_b->correlationHist();
           c1->SetLeftMargin(0.25);  c1->SetBottomMargin(0.25);
           corr->SetTitle("Correlation matrix of fit parameters");
@@ -248,10 +286,16 @@ bool MaxLikelihoodFit::runSpecific(RooWorkspace *w, RooStats::ModelConfig *mc_s,
           corr->Draw("COLZ TEXT");
           c1->Print((out_+"/covariance_fit_b.png").c_str());
           c1->SetLeftMargin(0.16);  c1->SetBottomMargin(0.13);
+
       	  if (fitOut.get()) fitOut->WriteTObject(corr, "covariance_fit_b");
+      	  c1->SetName("covariance_fit_b");
+      	  //file->cd();
+      	  //c1->Write();  
+      
       }
   }
   else {
+	
 	fitStatus_=-1;
 	numbadnll_=-1;	
   }
@@ -263,10 +307,13 @@ bool MaxLikelihoodFit::runSpecific(RooWorkspace *w, RooStats::ModelConfig *mc_s,
   if (!reuseParams_) w->loadSnapshot("clean"); // Reset, also ensures nll_prefit is same in call to doFit for b and s+b
   r->setVal(preFitValue_); r->setConstant(false); 
   if (minos_ != "all") {
+
     RooArgList minos; if (minos_ == "poi") minos.add(*r);
     res_s = doFit(*mc_s->GetPdf(), data, minos, constCmdArg_s, /*hesse=*/!noErrors_,/*reuseNLL*/ true); 
     nll_sb_ = nll->getVal()-nll0;
   } else {
+    //std::cout << "giulia debug : before signal fit" << std::endl;
+    
     CloseCoutSentry sentry(verbose < 2);
     res_s = mc_s->GetPdf()->fitTo(data, 
             RooFit::Save(1), 
@@ -278,12 +325,20 @@ bool MaxLikelihoodFit::runSpecific(RooWorkspace *w, RooStats::ModelConfig *mc_s,
     if (res_s) nll_sb_= nll->getVal()-nll0;
 
   }
-  if (res_s) { 
+  if (res_s) {
+
+    //std::cout << "giulia debug : result of signal fit not empty" << std::endl; 
       limit    = r->getVal();
       limitErr = r->getError();
       if (verbose > 1) res_s->Print("V");
       if (fitOut.get()){
 	 if (currentToy_<1) fitOut->WriteTObject(res_s, "fit_s");
+ 	 RooAbsPdf* pdf_model = (RooAbsPdf*)mc_s->GetPdf();
+	 const RooArgSet *params_ =  pdf_model->getParameters(*mc_s->GetObservables());
+	//params_->Print();
+
+	 setFitResultTrees(params_,parametersOfInterest_);
+	 //setFitResultTrees(mc_s->GetObservables(),parametersOfInterest_);
 
 	 if (withSystematics)	{
 	   setFitResultTrees(mc_s->GetNuisanceParameters(),nuisanceParameters_);
@@ -299,13 +354,17 @@ bool MaxLikelihoodFit::runSpecific(RooWorkspace *w, RooStats::ModelConfig *mc_s,
       if (makePlots_) {
           std::vector<RooPlot *> plots = utils::makePlots(*mc_s->GetPdf(), data, signalPdfNames_.c_str(), backgroundPdfNames_.c_str(), rebinFactor_);
           for (std::vector<RooPlot *>::iterator it = plots.begin(), ed = plots.end(); it != ed; ++it) {
-              c1->cd(); (*it)->Draw(); 
+	      c1->cd(); (*it)->Draw(); 
               c1->Print((out_+"/"+(*it)->GetName()+"_fit_s.png").c_str());
               if (fitOut.get() && currentToy_< 1) fitOut->WriteTObject(*it, (std::string((*it)->GetName())+"_fit_s").c_str());
-          }
+      	      c1->SetName(TString::Format("fit_s_toy%d",currentToy_+1));
+      	      //file->cd();
+      	      //c1->Write();  
+	  }
       }
 
       if (saveNormalizations_) {
+
           RooArgSet *norms = new RooArgSet();
           norms->setName("norm_fit_s");
           CovarianceReSampler sampler(res_s);
@@ -316,7 +375,7 @@ bool MaxLikelihoodFit::runSpecific(RooWorkspace *w, RooStats::ModelConfig *mc_s,
 
       if (makePlots_&& currentToy_< 1)  {
           TH2 *corr = res_s->correlationHist();
-          c1->SetLeftMargin(0.25);  c1->SetBottomMargin(0.25);
+	  c1->SetLeftMargin(0.25);  c1->SetBottomMargin(0.25);
           corr->SetTitle("Correlation matrix of fit parameters");
           gStyle->SetPaintTextFormat(res_s->floatParsFinal().getSize() > 10 ? ".1f" : ".2f");
           gStyle->SetOptStat(0);
@@ -325,13 +384,20 @@ bool MaxLikelihoodFit::runSpecific(RooWorkspace *w, RooStats::ModelConfig *mc_s,
           c1->Print((out_+"/covariance_fit_s.png").c_str());
           c1->SetLeftMargin(0.16);  c1->SetBottomMargin(0.13);
           if (fitOut.get() ) fitOut->WriteTObject(corr, "covariance_fit_s");
+      	  c1->SetName("covariance_fit_s");
+      	  //file->cd();
+      	  //c1->Write();  
+     
       }
   }  else {
+
 	fitStatus_=-1;
 	numbadnll_=-1;
   	nll_nll0_ = -1;
   }
   mu_=r->getVal();
+  std::cout << "mu = " << mu_ << std::endl; 
+
 
   if (res_s) {
       RooRealVar *rf = dynamic_cast<RooRealVar*>(res_s->floatParsFinal().find(r->GetName()));
@@ -386,12 +452,13 @@ bool MaxLikelihoodFit::runSpecific(RooWorkspace *w, RooStats::ModelConfig *mc_s,
   bool fitreturn = (res_s!=0);
   delete res_s;
 
+  //file->Close();
   if(saveWorkspace_){
-	  RooWorkspace *ws = new RooWorkspace("MaxLikelihoodFitResult");
+	  RooWorkspace *ws = new RooWorkspace(TString::Format("MaxLikelihoodFitResult"));
 	  ws->import(*mc_s->GetPdf());
 	  ws->import(data);
 	  std::cout << "Saving pdfs and data to MaxLikelihoodFitResult.root" << std::endl;
-	  ws->writeToFile("MaxLikelihoodFitResult.root");
+	  ws->writeToFile(out_string.Append(TString::Format("MaxLikelihoodFitResult.root")),0);
   }
   std::cout << "nll S+B -> "<<nll_sb_ << "  nll B -> " << nll_bonly_ <<std::endl;
   return fitreturn;
@@ -642,8 +709,14 @@ void MaxLikelihoodFit::setFitResultTrees(const RooArgSet *args, double * vals){
 	 
          for (TObject *a = iter->Next(); a != 0; a = iter->Next()) { 
                  RooRealVar *rrv = dynamic_cast<RooRealVar *>(a);        
+		 rrv->Print();
+		 //if (rrv->isConstant()) std::cout <<  "parameter " << rrv->GetName() << " is constant" << std::endl;
+		 if (rrv->getAttribute("flatParam") && rrv->isConstant()) {
+		   std::cout << "ERROR: parameter " << rrv->GetName() << " is declared as flatParam but is constant.\n";
+      		 }
 		 //std::string name = rrv->GetName();
 		 vals[count]=rrv->getVal();
+		 std::cout << "debug - " << vals[count] << std::endl;
 		 count++;
          }
 	 delete iter;
@@ -696,9 +769,17 @@ void MaxLikelihoodFit::createFitResultTrees(const RooStats::ModelConfig &mc, boo
 	 int count=0; 
          // fill the maps for the nuisances, and global observables
          RooArgSet *norms = new RooArgSet();
+	 processNormalizations_ = new double[norms->getSize()];
          getNormalizationsSimple(mc.GetPdf(), *mc.GetObservables(), *norms);
- 
-         processNormalizations_ = new double[norms->getSize()];
+	 //std::cout << "giulia debug: norms size " << processNormalizations_ << std::endl;
+	
+	 //giulia test
+	 RooAbsPdf* pdf_model = (RooAbsPdf*)mc.GetPdf();
+	 const RooArgSet *params_ =  pdf_model->getParameters(*mc.GetObservables());
+	 params_->Print();
+	 //const RooArgSet *params_ =  mc.GetObservables();
+	 parametersOfInterest_  = new double[params_->getSize()];
+	 //std::cout << "giulia debug: params size " << parametersOfInterest_ << std::endl;
 
 	 // If no systematic (-S 0), then don't make nuisance trees
 	 if (withSys){
@@ -707,7 +788,7 @@ void MaxLikelihoodFit::createFitResultTrees(const RooStats::ModelConfig &mc, boo
  	  globalObservables_ = new double[cons->getSize()];
 	  nuisanceParameters_= new double[nuis->getSize()];
 
-          TIterator* iter_c(cons->createIterator());
+	  TIterator* iter_c(cons->createIterator());
           for (TObject *a = iter_c->Next(); a != 0; a = iter_c->Next()) { 
                  RooRealVar *rrv = dynamic_cast<RooRealVar *>(a);        
 		 std::string name = rrv->GetName();
@@ -727,6 +808,17 @@ void MaxLikelihoodFit::createFitResultTrees(const RooStats::ModelConfig &mc, boo
 		 count++;
           }
 
+         }
+	 count = 0;
+         TIterator* iter_par(params_->createIterator());
+	 for (TObject *a = iter_par->Next(); a != 0; a = iter_par->Next()) { 
+                 RooRealVar *rvv = dynamic_cast<RooRealVar *>(a);        
+	         std::string name = rvv->GetName();
+	         std::cout << "name : " << name << std::endl; 
+	         parametersOfInterest_[count] = 0;
+	         t_fit_sb_->Branch(name.c_str(),&(parametersOfInterest_[count])),Form("%s/Double_t",name.c_str());
+	         t_fit_b_->Branch(name.c_str(),&(parametersOfInterest_[count]),Form("%s/Double_t",name.c_str()));
+	         count++;
          }
 
 	 count = 0;

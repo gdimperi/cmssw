@@ -468,10 +468,12 @@ utils::makePlots(const RooAbsPdf &pdf, const RooAbsData &data, const char *signa
             RooRealVar *x = dynamic_cast<RooRealVar *>(obs->first());
             if (x == 0) continue;
             int nbins = x->numBins(); if (nbins == 0) nbins = 100;
+	    std::cout<< "dataset : " << ds->GetName() << "  nbins before rebinning : " << nbins << std::endl;
             if (nbins/rebinFactor > 6) nbins = ceil(nbins/rebinFactor);
             ret.push_back(x->frame(RooFit::Title(ds->GetName()), RooFit::Bins(nbins)));
             ret.back()->SetName(ds->GetName());
-            ds->plotOn(ret.back(), RooFit::DataError(RooAbsData::Poisson));
+	    std::cout<< "dataset : " << ds->GetName() << "  nbins : " << nbins << std::endl;
+	    ds->plotOn(ret.back(), RooFit::DataError(RooAbsData::Poisson));
             if (signalSel && strlen(signalSel))         pdfi->plotOn(ret.back(), RooFit::LineColor(209), RooFit::Components(signalSel));
             if (backgroundSel && strlen(backgroundSel)) pdfi->plotOn(ret.back(), RooFit::LineColor(206), RooFit::Components(backgroundSel));
             pdfi->plotOn(ret.back());

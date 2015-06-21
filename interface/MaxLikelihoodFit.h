@@ -53,6 +53,7 @@ protected:
   double* globalObservables_;
   double* nuisanceParameters_;
   double* processNormalizations_;
+  double* parametersOfInterest_;
 
   TTree *t_fit_b_, *t_fit_sb_;
    
